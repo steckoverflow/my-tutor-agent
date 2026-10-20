@@ -7,16 +7,62 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/invopop/jsonschema"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
 )
+
+func GenerateSchema[T any]() openai.FunctionParameters {
+	reflector := jsonschema.Reflector{
+		AllowAdditionalProperties: false,
+		DoNotReference:            true,
+	}
+	var v T
+	schema := reflector.Reflect(v)
+
+	b, err := json.Marshal(schema)
+	if err != nil {
+		panic(err)
+	}
+	var params openai.FunctionParameters
+	if err := json.Unmarshal(b, &params); err != nil {
+		panic(err)
+	}
+	return params
+}
 
 type ToolDefinition struct {
 	Name        string                    `json:"name"`
 	Description string                    `json:"description"`
 	InputSchema openai.FunctionParameters `json:"input_schema"`
 	Function    func(input json.RawMessage) (string, error)
+}
+
+type ReadFileInput struct {
+	Path string `json:"path" jsonschema_description:"The relative path of a file in the working directory."`
+}
+
+func ReadFile(input json.RawMessage) (string, error) {
+	readFileInput := ReadFileInput{}
+	err := json.Unmarshal(input, &readFileInput)
+	if err != nil {
+		panic(err)
+	}
+	content, err := os.ReadFile(readFileInput.Path)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+var ReadFileInputSchema = GenerateSchema[ReadFileInput]()
+
+var ReadFileDefinition = ToolDefinition{
+	Name:        "read_file",
+	Description: "Read the contents of a given relative file path. Use this when you want  to see what's inside a file. Do not use this with directory names.",
+	InputSchema: ReadFileInputSchema,
+	Function:    ReadFile,
 }
 
 type Agent struct {
@@ -49,7 +95,6 @@ func (a *Agent) runInference(ctx context.Context, userInput string) (string, err
 			},
 		))
 	}
-
 	a.messages = append(
 		a.messages,
 		openai.UserMessage(userInput),
@@ -104,7 +149,7 @@ func main() {
 		}
 		return scanner.Text(), true
 	}
-	tools := []ToolDefinition{}
+	tools := []ToolDefinition{ReadFileDefinition}
 	agent := NewAgent(client, getUserMessage, tools)
 	err := agent.Run(ctx)
 	if err != nil {
