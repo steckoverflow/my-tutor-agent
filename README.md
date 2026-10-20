@@ -61,3 +61,9 @@ What happens under the hood:
 To add your own tool: write an input struct, a `func(json.RawMessage) (string, error)`,
 build a `ToolDefinition` with `GenerateSchema[YourInput]()`, and add it to the
 `tools` slice in `main`.
+
+### Thanks
+
+Inspired by https://ampcode.com/notes/how-to-build-an-agent
+Modified to fix oMLX / OpenAI compatible schema vs Anthropic
+
