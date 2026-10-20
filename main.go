@@ -84,7 +84,28 @@ func NewAgent(client openai.Client, getUserMessage func() (string, bool), tools 
 		tools: tools}
 }
 
-func (a *Agent) runInference(ctx context.Context, userInput string) (string, error) {
+func (a *Agent) executeTool(id, name string, input json.RawMessage) {
+	var def ToolDefinition
+	found := false
+	for _, t := range a.tools {
+		if t.Name == name {
+			def, found = t, true
+			break
+		}
+	}
+	if !found {
+		a.messages = append(a.messages, openai.ToolMessage("tool not found", id))
+		return
+	}
+	fmt.Printf("\x1b[92mtool\x1b[0m: %s(%s)\n", name, input)
+	out, err := def.Function(input)
+	if err != nil {
+		out = "error: " + err.Error()
+	}
+	a.messages = append(a.messages, openai.ToolMessage(out, id))
+}
+
+func (a *Agent) runInference(ctx context.Context) (openai.ChatCompletionMessage, error) {
 	oiTools := []openai.ChatCompletionToolUnionParam{}
 	for _, tool := range a.tools {
 		oiTools = append(oiTools, openai.ChatCompletionFunctionTool(
@@ -95,10 +116,6 @@ func (a *Agent) runInference(ctx context.Context, userInput string) (string, err
 			},
 		))
 	}
-	a.messages = append(
-		a.messages,
-		openai.UserMessage(userInput),
-	)
 	response, err := a.client.Chat.Completions.New(
 		ctx,
 		openai.ChatCompletionNewParams{
@@ -108,32 +125,43 @@ func (a *Agent) runInference(ctx context.Context, userInput string) (string, err
 		},
 	)
 	if err != nil {
-		return "", fmt.Errorf("chat completion: %w", err)
+		return openai.ChatCompletionMessage{}, fmt.Errorf("chat completion: %w", err)
 	}
 	if len(response.Choices) == 0 {
-		return "", fmt.Errorf("model returned no choices")
+		return openai.ChatCompletionMessage{}, fmt.Errorf("model returned no choices")
 	}
-	reply := response.Choices[0].Message.Content
-	a.messages = append(
-		a.messages,
-		openai.AssistantMessage(reply),
-	)
+	reply := response.Choices[0].Message
+	a.messages = append(a.messages, reply.ToParam())
 	return reply, nil
 }
 
 func (a *Agent) Run(ctx context.Context) error {
 	fmt.Println("Chat with Teddy (use 'ctrl-c' to quit)")
+	readUserInput := true
 	for {
-		fmt.Print("\x1b[94mYou\x1b[0m: ")
-		userInput, ok := a.getUserMessage()
-		if !ok {
-			break
+		if readUserInput {
+			fmt.Print("\x1b[94mYou\x1b[0m: ")
+			userInput, ok := a.getUserMessage()
+			if !ok {
+				break
+			}
+			a.messages = append(a.messages, openai.UserMessage(userInput))
 		}
-		reply, err := a.runInference(ctx, userInput)
+		reply, err := a.runInference(ctx)
 		if err != nil {
 			return err
 		}
-		fmt.Println("Teddy:", reply)
+		if reply.Content != "" {
+			fmt.Printf("\x1b[93mTeddy\x1b[0m: %s\n", reply.Content)
+		}
+		if len(reply.ToolCalls) == 0 {
+			readUserInput = true
+			continue
+		}
+		for _, tc := range reply.ToolCalls {
+			a.executeTool(tc.ID, tc.Function.Name, json.RawMessage(tc.Function.Arguments))
+		}
+		readUserInput = false
 	}
 	return nil
 }
