@@ -7,9 +7,7 @@ import (
 	"os"
 
 	"github.com/openai/openai-go/v3"
-	"github.com/openai/openai-go/v3/conversations"
 	"github.com/openai/openai-go/v3/option"
-	"github.com/openai/openai-go/v3/responses"
 )
 
 type Agent struct {
@@ -29,48 +27,45 @@ func NewAgent(client openai.Client, getUserMessage func() (string, bool)) *Agent
 		}}
 }
 
-func (a *Agent) runInference(ctx context.Context, conversation *conversations.Conversation, userMessage responses.ResponseNewParamsInputUnion) (*responses.Response, error) {
-	response, err := a.client.Responses.New(ctx, responses.ResponseNewParams{
-		Model: "Qwen3.8-27B-4bit",
-		Input: userMessage,
-		Conversation: responses.ResponseNewParamsConversationUnion{
-			OfConversationObject: &responses.ResponseConversationParam{
-				ID: conversation.ID,
-			},
+func (a *Agent) runInference(ctx context.Context, userInput string) (string, error) {
+	a.messages = append(
+		a.messages,
+		openai.UserMessage(userInput),
+	)
+	response, err := a.client.Chat.Completions.New(
+		ctx,
+		openai.ChatCompletionNewParams{
+			Model:    "Qwen3.8-27B-4bit",
+			Messages: a.messages,
 		},
-	})
+	)
 	if err != nil {
-		panic(err)
+		return "", fmt.Errorf("chat completion: %w", err)
 	}
-	return response, nil
+	if len(response.Choices) == 0 {
+		return "", fmt.Errorf("model returned no choices")
+	}
+	reply := response.Choices[0].Message.Content
+	a.messages = append(
+		a.messages,
+		openai.AssistantMessage(reply),
+	)
+	return reply, nil
 }
 
 func (a *Agent) Run(ctx context.Context) error {
-	conversation, err := a.client.Conversations.New(ctx, conversations.ConversationNewParams{})
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println("Created conversation:", conversation.ID)
 	fmt.Println("Chat with Teddy (use 'ctrl-c' to quit)")
 	for {
-		fmt.Print("\\u001b[94mYou\\u001b[0m: ")
+		fmt.Print("\x1b[94mYou\x1b[0m: ")
 		userInput, ok := a.getUserMessage()
 		if !ok {
 			break
 		}
-		userMessage := responses.ResponseNewParamsInputUnion{
-			OfString: openai.String(userInput),
-		}
-		message, err := a.runInference(ctx, conversation, userMessage)
+		reply, err := a.runInference(ctx, userInput)
 		if err != nil {
 			return err
 		}
-		fmt.Println("Teddy: ", message.OutputText())
-		items, err := a.client.Conversations.Items.List(ctx, conversation.ID, conversations.ItemListParams{})
-		if err != nil {
-			return err
-		}
-		fmt.Println("Conversation has", len(items.Data), "items")
+		fmt.Println("Teddy:", reply)
 	}
 	return nil
 }
