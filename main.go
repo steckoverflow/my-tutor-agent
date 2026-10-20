@@ -3,20 +3,30 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openai/openai-go/v3/shared"
 )
+
+type ToolDefinition struct {
+	Name        string                    `json:"name"`
+	Description string                    `json:"description"`
+	InputSchema openai.FunctionParameters `json:"input_schema"`
+	Function    func(input json.RawMessage) (string, error)
+}
 
 type Agent struct {
 	client         openai.Client
 	getUserMessage func() (string, bool)
 	messages       []openai.ChatCompletionMessageParamUnion
+	tools          []ToolDefinition
 }
 
-func NewAgent(client openai.Client, getUserMessage func() (string, bool)) *Agent {
+func NewAgent(client openai.Client, getUserMessage func() (string, bool), tools []ToolDefinition) *Agent {
 	return &Agent{
 		client:         client,
 		getUserMessage: getUserMessage,
@@ -24,10 +34,22 @@ func NewAgent(client openai.Client, getUserMessage func() (string, bool)) *Agent
 			openai.SystemMessage(
 				"You are Teddy, a helpful and patient tutor.",
 			),
-		}}
+		},
+		tools: tools}
 }
 
 func (a *Agent) runInference(ctx context.Context, userInput string) (string, error) {
+	oiTools := []openai.ChatCompletionToolUnionParam{}
+	for _, tool := range a.tools {
+		oiTools = append(oiTools, openai.ChatCompletionFunctionTool(
+			shared.FunctionDefinitionParam{
+				Name:        tool.Name,
+				Description: openai.String(tool.Description),
+				Parameters:  tool.InputSchema,
+			},
+		))
+	}
+
 	a.messages = append(
 		a.messages,
 		openai.UserMessage(userInput),
@@ -37,6 +59,7 @@ func (a *Agent) runInference(ctx context.Context, userInput string) (string, err
 		openai.ChatCompletionNewParams{
 			Model:    "Qwen3.8-27B-4bit",
 			Messages: a.messages,
+			Tools:    oiTools,
 		},
 	)
 	if err != nil {
@@ -81,7 +104,8 @@ func main() {
 		}
 		return scanner.Text(), true
 	}
-	agent := NewAgent(client, getUserMessage)
+	tools := []ToolDefinition{}
+	agent := NewAgent(client, getUserMessage, tools)
 	err := agent.Run(ctx)
 	if err != nil {
 		fmt.Printf("Error: %s\n", err.Error())
